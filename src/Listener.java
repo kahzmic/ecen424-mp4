@@ -1,6 +1,7 @@
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.SocketTimeoutException;
 import java.util.Random;
 
 public class Listener {
@@ -21,9 +22,9 @@ public class Listener {
         send(talkerSocket, "REQ", talkerAddress, talkerPort);
         System.out.println("Requested connection to Talker " + talkerAddress.getHostAddress() + ":" + talkerPort);
 
+        DatagramSocket listenSocket = new DatagramSocket(port);
         while (true) {
             // Wait for a Talker to connect
-            DatagramSocket listenSocket = new DatagramSocket(port);
             byte[] buf = new byte[256];
             DatagramPacket packet = new DatagramPacket(buf, buf.length);
             System.out.println("Waiting for Talker on port " + port + "...");
@@ -36,10 +37,30 @@ public class Listener {
             int count = Integer.parseInt(receiveMessage(talkerSocket, listenSocket, 1, talkerAckAddress, talkerAckPort, drop));
             StringBuilder message = new StringBuilder();
             for (int i = 1; i <= count; i++)
-                message.append(receiveMessage(talkerSocket, listenSocket, i + 1, talkerAckAddress, talkerAckPort, drop && i < count));
+                message.append(receiveMessage(talkerSocket, listenSocket, i + 1, talkerAckAddress, talkerAckPort, drop));
 
-            listenSocket.close();
             System.out.println("Complete message: " + message + "\n");
+
+            // Final ACK (count + 1) may have been dropped: re-ACK resends of the last
+            // message until the Talker goes quiet longer than its 2s timeout
+            talkerSocket.setSoTimeout(4000);
+            try {
+                while (true) {
+                    packet = new DatagramPacket(buf, buf.length);
+                    talkerSocket.receive(packet);
+                    if (!new String(packet.getData(), 0, packet.getLength()).startsWith(count + ":"))
+                        break; // start of the next message; the Talker will resend it
+                    System.out.println("Received duplicate message " + count);
+                    if (drop && random.nextBoolean()) {
+                        System.out.println("Dropped ACK for message " + count);
+                    } else {
+                        send(listenSocket, String.valueOf(count + 1), talkerAckAddress, talkerAckPort);
+                        System.out.println("Sent ACK " + (count + 1));
+                    }
+                }
+            } catch (SocketTimeoutException e) {
+            }
+            talkerSocket.setSoTimeout(0);
         }
     }
 
